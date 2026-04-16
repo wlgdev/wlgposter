@@ -1,0 +1,27 @@
+﻿name: "🪧 Task"
+description: "specific action needed to complete a work/feature"
+title: "🪧 [TASK] - "
+labels: [
+  "enhancement"
+]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: "Task Summary"
+      description: Briefly describe what needs to be done in this task.
+      placeholder: Short and explicit description of your task...
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: "Acceptance Criteria"
+      description: Define when this task will be considered complete.
+      placeholder: |
+        - [ ] Login form validates user input
+        - [ ] Authentication API returns correct tokens
+        - [ ] Error messages are displayed properly
+    validations:
+      required: false

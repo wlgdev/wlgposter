@@ -1,0 +1,24 @@
+﻿name: "🚀 Feature Task"
+description: "specific feature to be implemented"
+title: "🚀 [FEATURE] - "
+labels: [
+  "feature"
+]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: "Feature Summary"
+      description: Provide a brief overview of the feature being implemented.
+      placeholder: Short and clear description of feature to complete...
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: "Additional Notes"
+      description: Any extra details, references, related issues, blockers or requirements... before start to work on this feature
+      placeholder: Add design references, related documents or discussion links to admit
+    validations:
+      required: false

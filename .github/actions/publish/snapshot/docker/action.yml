@@ -1,0 +1,85 @@
+# FILE: ./.github/actions/publish/snapshot/docker/action.yml
+# DESCRIPTION: same as release/docker/action.yml
+
+name: 'PUBLISH Docker Image to GHCR.io'
+description: 'Build and Push docker image to GitHub Container Registry (GHCR.io)'
+
+inputs:
+  dockerfile:
+    description: 'Path to Dockerfile - relative to context'
+    required: false
+    default: './Dockerfile'
+  image-name:
+    description: 'Name of the final docker image (example: "image-name")'
+    required: false
+    default: ${{ github.event.repository.name }}
+  context:
+    description: 'Path to Build Context - directory containing Dockerfile'
+    required: false
+    default: './'
+  tags:
+    description: 'List of Comma-separated additional tags to apply to the image'
+    required: false
+    default: ''
+  push:
+    description: 'Whether to push the image to the registry.'
+    required: false
+    default: 'true' # Default to true for publishing action
+  cache-from:
+    description: 'Docker cache source - type=gha'
+    required: false
+    default: 'type=gha'
+  cache-to:
+    description: 'Docker cache destination - type=gha,mode=max'
+    required: false
+    default: 'type=gha,mode=max'
+  github-token:
+    description: 'GitHub token for authentication with GHCR.io. Defaults to GITHUB_TOKEN.'
+    required: true # Make it required to ensure it's passed
+    default: '${{ github.token }}' # Use the GITHUB_TOKEN from the calling workflow
+  keep-last-releases:
+    description: 'Keep last N number of release images (older then 6months)'
+    required: false
+    default: '25'
+  keep-last-master:
+    description: 'Keep last N number of master images (older then 1day)'
+    required: false
+    default: '10'
+  keep-last-dev:
+    description: 'Keep last N number of dev images (older then 1day)'
+    required: false
+    default: '10'
+
+outputs:
+  image-name:
+    description: 'Provides final name of the image created'
+    value: ${{ steps.snapshot.outputs.image-name }}
+  image-digest:
+    description: 'Digest of the pushed Docker image'
+    value: ${{ steps.snapshot.outputs.image-digest }}
+  image-tags:
+    description: 'List of comma-separated tags applied to the image'
+    value: ${{ steps.snapshot.outputs.image-tags }}
+  image-tag:
+    description: 'Single most relevant tag name (not "-latest")'
+    value: ${{ steps.snapshot.outputs.image-tag }}
+
+runs:
+  using: composite
+  steps:
+
+    - name: snapshot docker image
+      id: snapshot
+      uses: ./.github/actions/publish/release/docker
+      with:
+        dockerfile: ${{ inputs.dockerfile }}
+        image-name: ${{ inputs.image-name }}
+        context: ${{ inputs.context }}
+        tags: ${{ inputs.tags }}
+        push: ${{ inputs.push }}
+        cache-from: ${{ inputs.cache-from }}
+        cache-to: ${{ inputs.cache-to }}
+        github-token: ${{ inputs.github-token }}
+        keep-last-releases: ${{ inputs.keep-last-releases }}
+        keep-last-master: ${{ inputs.keep-last-master }}
+        keep-last-dev: ${{ inputs.keep-last-dev }}

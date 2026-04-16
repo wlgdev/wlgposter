@@ -1,0 +1,484 @@
+# FILE: ./.github/actions/deploy/compose/traefik/action.yml
+# DESCRIPTION: allows deploying applications with a docker-compose.yml file
+#              generates: docker-compose.deploy.yml with commented ports for all services
+#                         as it runs under reverse-proxy we do not need to expose ports (to access by domain only)
+#              generates: docker-compose.override.yml for to self-create SSL certificate using traefik
+#                         with assigned to docker network for specified service name together with traefik
+#              service name will be accessible by https://${SUBDOMAIN_NAME}.${DOMAIN_NAME} for ${TARGET_SERVICE}:${TARGET_PORT}
+
+name: deploy [DOCKER-COMPOSE]
+description: copy by ssh sources to remote and runs compose docker command
+
+inputs:
+  ssh_private_key:
+    required: true
+    description: 'ssh: private key'
+  ssh_private_host:
+    required: true
+    description: 'ssh: host name'
+  ssh_private_port:
+    required: true
+    description: 'ssh: host port'
+  ssh_private_user:
+    required: true
+    description: 'ssh: host user'
+
+  delete_before_deploy:
+    required: false
+    description: "delete folders before running 'docker compose up'"
+  is_dev_deployment:
+    required: false
+    description: 'true/false: adds {subdomain}.dev.{domain} and {some-service}-dev-network to docker network'
+    default: ${{ github.event_name != 'release' || github.event.action != 'published' }}
+
+  target:
+    required: false
+    description: 'format: ${SUBDOMAIN_NAME}:${SERVICE_NAME}:${PORT} - list of services to be targeted'
+  domain:
+    required: false
+    description: 'default: wlg.tv'
+    default: "wlg.tv"
+
+  compose_file:
+    required: false
+    description: "default: ./docker-compose.yml - path to compose file"
+    default: "./docker-compose.yml"
+  env:
+    required: false
+    description: 'list of env variables'
+  joiner_container:
+    required: false
+    description: 'join containers to same network with name'
+
+# ----------------------------------------------------------------------
+
+runs:
+  using: composite
+  steps:
+    - id: validate
+      name: validate input details before start
+      shell: bash
+      run: |
+        echo ""
+        echo "========== VALIDATE TARGETS =========="
+        echo ""
+
+        INPUT_FILE=${{inputs.compose_file}}
+        if [[ "$INPUT_FILE" == *"../"* ]]; then
+          echo "::error::ERROR: composite path should not contain '../'"
+          exit 1
+        fi
+        if [ ! -e "$INPUT_FILE" ]; then
+          echo "::error::ERROR: cannot find $INPUT_FILE"
+          exit 1
+        fi
+
+        echo "${{ inputs.target }}" | tr -s '[:space:]' '\n' | while read -r target; do
+          # Skip empty lines
+          [[ -z "$target" ]] && continue
+
+          IFS=':' read -r DOMAIN_NAME SERVICE_NAME PORT <<< "$target"
+
+          # CHECK ALL NON EMPTY
+          if [[ -z "$DOMAIN_NAME" ]]; then
+            echo ::error::ERROR: subdomain name should be provided for "target" input
+            echo ::warning::expected input format: SUBDOMAIN:SERVICE:PORT
+            echo ::warning::domain will be appended as: ${DOMAIN}.${{ inputs.domain }}
+            exit 1
+          fi
+          if [[ -z "$SERVICE_NAME" ]]; then
+            echo ::error::ERROR: service name should be provided for "target" input
+            echo ::warning::expected input format: SUBDOMAIN:SERVICE:PORT
+            echo ::warning::SERVICE name is the name of service from docker-compose.yml
+            exit 1
+          fi
+          if [[ -z "$PORT" ]]; then
+            echo ::error::ERROR: port number should be provided for "target" input
+            echo ::warning::expected input format: SUBDOMAIN:SERVICE:PORT
+            exit 1
+          fi
+
+          # CHECK DOMAIN INPUT FORMAT (basic check: letters, numbers, dots, and dashes)
+          if ! [[ "$DOMAIN_NAME" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+            echo "::error::ERROR: Invalid domain name format."
+            exit 1
+          fi
+          # CHECK SERVICE INPUT FORMAT (letters, numbers, dashes, underscores)
+          if ! [[ "$SERVICE_NAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            echo "::error::ERROR: Invalid service name format."
+            exit 1
+          fi
+          # CHECK PORT INPUT FORMAT (numeric and valid port range)
+          if ! [[ "$PORT" =~ ^[0-9]+$ ]]; then
+            echo "::error::ERROR: port must be numeric."
+            exit 1
+          elif (( PORT < 1 || PORT > 65535 )); then
+            echo "::error::ERROR: port must be between 1 and 65535."
+            exit 1
+          fi
+
+          # VALIDATE BRANCH NAME FOR TARGET DOMAIN NAME
+          if [ "${{ inputs.is_dev_deployment }}" == "true" ]; then
+            DOMAIN_NAME=$DOMAIN_NAME.dev
+          fi
+          DOMAIN_NAME=$DOMAIN_NAME.${{ inputs.domain }}
+          echo "TARGET: $DOMAIN_NAME -> $SERVICE_NAME:$PORT"
+          echo "ENVIRONMENT (IS DEV): ${{ inputs.is_dev_deployment }}"
+        done
+
+    - id: ssh
+      name: create ssh configuration
+      shell: bash
+      env:
+        SSH_DIR: /home/runner/.ssh
+        SSH_RSA_ID: /home/runner/.ssh/id_rsa
+      run: |
+        echo ""
+        echo "========== SSH CONNECTION KEYS =========="
+        echo ""
+        
+        echo "Starting SSH configuration..."
+        echo "Checking variables..."
+        if [ -z "${{ inputs.ssh_private_key }}" ]; then echo "ERROR: ssh_private_key is empty"; exit 1; fi
+        if [ -z "${{ inputs.ssh_private_host }}" ]; then echo "ERROR: ssh_private_host is empty"; exit 1; fi
+        if [ -z "${{ inputs.ssh_private_user }}" ]; then echo "ERROR: ssh_private_user is empty"; exit 1; fi
+        if [ -z "${{ inputs.ssh_private_port }}" ]; then echo "ERROR: ssh_private_port is empty"; exit 1; fi
+        if [ -z "${{ env.SSH_RSA_ID }}" ]; then echo "ERROR: SSH_RSA_ID is empty"; exit 1; fi
+        
+        
+        echo "Creating .ssh directory..."
+        mkdir -p "${SSH_DIR}"
+        
+        echo "Setting up private key..."
+        if [ -f "${{ env.SSH_RSA_ID }}" ]; then
+          rm "${{ env.SSH_RSA_ID }}"
+        fi
+        echo "Writing up private key..."
+        echo "${{ inputs.ssh_private_key }}" | tr -d '\r' > "${{ env.SSH_RSA_ID }}"
+        
+        echo "Setting permissions..."
+        chmod 700 "${SSH_DIR}"
+        chmod 600 "${{ env.SSH_RSA_ID }}"
+        
+        echo "Creating SSH config..."
+
+        cat <<EOF >> "${SSH_DIR}/config"
+        Host sshserver
+            HostName ${{ inputs.ssh_private_host }}
+            User ${{ inputs.ssh_private_user }}
+            Port ${{ inputs.ssh_private_port }}
+            IdentityFile ${{ env.SSH_RSA_ID }}
+            StrictHostKeyChecking accept-new
+        EOF
+        
+        echo "Check host is available..."
+        nc -zv ${{ inputs.ssh_private_host }} ${{ inputs.ssh_private_port }} 2>&1 || {
+          echo "ERROR: Could not connect to host ${{ inputs.ssh_private_host }} on port ${{ inputs.ssh_private_port }}"
+          exit 1
+        }
+
+        echo "Running ssh-keyscan..."
+        ssh-keyscan -v -p ${{ inputs.ssh_private_port }} -H "${{ inputs.ssh_private_host }}" >> "${SSH_DIR}/known_hosts" 2>&1 || {
+          echo "ssh-keyscan failed with status $?"
+          echo "Content of known_hosts:"
+          cat "${SSH_DIR}/known_hosts"
+          exit 1
+        }
+        
+        echo "Testing SSH config..."
+        ls -la "${SSH_DIR}"
+        cat "${SSH_DIR}/config"
+        echo "SSH configuration completed"
+
+    - id: setup
+      name: generate names based on input values
+      shell: bash
+      env:
+        REPOSITORY_NAME: ${{ github.event.repository.name }}
+      run: |
+        echo ""
+        echo "========== SETUP NETWORK =========="
+        echo ""
+        
+        NETWORK_NAME=proxy-${{ env.REPOSITORY_NAME }}
+        if [ "${{ inputs.is_dev_deployment }}" == "true" ]; then
+          NETWORK_NAME=$NETWORK_NAME-dev
+        fi
+        NETWORK_NAME=$NETWORK_NAME-network
+        echo "NETWORK NAME = $NETWORK_NAME"
+        echo "network=$NETWORK_NAME" >> $GITHUB_OUTPUT
+
+    - id: compose-deploy
+      name: create docker deploy compose
+      shell: bash
+      run: |
+        echo ""
+        echo "========== GENERATE DOCKER COMPOSE (DEPLOY) =========="
+        echo ""
+        
+        INPUT_FILE=${{inputs.compose_file}}
+        OUTPUT_FILE="docker-compose.deploy.yml"
+
+        in_services_block=false
+        in_ports_block=false
+        > "$OUTPUT_FILE"
+        while IFS= read -r line || [[ -n "$line" ]]; do
+          if [[ "$line" =~ ^services: ]]; then
+            in_services=true
+          elif [[ "$line" =~ ^[a-zA-Z0-9] ]]; then
+            in_services=false
+            in_ports=false
+          fi
+        
+          if $in_services && [[ "$line" =~ ^[[:space:]]+ports: ]]; then
+            in_ports=true
+            echo "# $line" >> "$OUTPUT_FILE"
+          elif $in_ports && [[ "$line" =~ ^[[:space:]]+- ]]; then
+            echo "# $line" >> "$OUTPUT_FILE"
+          else
+            in_ports=false
+            echo "$line" >> "$OUTPUT_FILE"
+          fi
+        done < "$INPUT_FILE"
+        
+        echo "Generated OUTPUT FILE is: $OUTPUT_FILE"
+        cat $OUTPUT_FILE
+
+    - id: compose-override
+      name: create docker override compose
+      shell: bash
+      run: |
+        echo ""
+        echo "========== GENERATE DOCKER COMPOSE (OVERRIDE) =========="
+        echo ""
+        
+        TARGETS=$(echo "${{ inputs.target }}" | tr -s '[:space:]' '\n')
+        INPUT_FILE=${{inputs.compose_file}}
+        OUTPUT_FILE="docker-compose.override.yml"
+        
+        in_services_block=false
+        echo "networks:" >> "$OUTPUT_FILE"
+        echo "  ${{ steps.setup.outputs.network }}:" >> "$OUTPUT_FILE"
+        echo "    external: true" >> "$OUTPUT_FILE"
+        echo "services:" >> "$OUTPUT_FILE"
+        while IFS= read -r line; do
+          # Detect start of services block
+          if [[ "$line" =~ ^services: ]]; then
+            in_services_block=true
+            continue
+          fi
+        
+          # Stop when hitting another top-level key
+          if $in_services_block && [[ "$line" =~ ^[a-zA-Z0-9_-]+: ]]; then
+            break
+          fi
+        
+          # Match lines indented exactly 2 spaces (first-level keys under services)
+          if $in_services_block && [[ "$line" =~ ^[[:space:]]{2}([a-zA-Z0-9_-]+): ]]; then
+            actual_service="${BASH_REMATCH[1]}"
+            target_found=false
+            while read -r target; do
+              # Skip empty lines
+              [[ -z "$target" ]] && continue
+              IFS=':' read -r TARGET_DOMAIN TARGET_SERVICE TARGET_PORT <<< "$target"
+
+              # SET TARGET DOMAIN NAME
+              TARGET_ROUTE=${{ github.event.repository.name }}
+              if [ "${{ inputs.is_dev_deployment }}" == "true" ]; then
+                TARGET_DOMAIN=$TARGET_DOMAIN.dev
+                TARGET_ROUTE=$TARGET_ROUTE-dev
+              fi
+              TARGET_DOMAIN=$TARGET_DOMAIN.${{ inputs.domain }}
+              TARGET_ROUTE=$TARGET_ROUTE-$actual_service
+
+              if [[ "$actual_service" == "$TARGET_SERVICE" ]]; then
+                target_found=true
+                echo "## 📃 SUMMARY: ${actual_service}" >> $GITHUB_STEP_SUMMARY
+                echo "-  🚀 URL    : ${TARGET_DOMAIN}"  >> $GITHUB_STEP_SUMMARY
+                echo "-  🚀 Route  : ${TARGET_ROUTE}"   >> $GITHUB_STEP_SUMMARY
+                echo "-  🛜 Network: ${{ steps.setup.outputs.network }} " >> $GITHUB_STEP_SUMMARY
+        
+                {
+                  echo "  $actual_service:"
+                  echo "    networks:"
+                  echo "      - default"
+                  echo "      - ${{ steps.setup.outputs.network }}"
+                  echo "    labels:"
+                  echo "      - \"traefik.enable=true\""
+                  echo "      - \"traefik.http.services.$TARGET_ROUTE.loadbalancer.server.port=$TARGET_PORT\""
+                  echo "      - \"traefik.http.routers.$TARGET_ROUTE.rule=Host(\`$TARGET_DOMAIN\`)\""
+                  echo "      - \"traefik.http.routers.$TARGET_ROUTE.tls=true\""
+                  echo "      - \"traefik.http.routers.$TARGET_ROUTE.tls.certresolver=letsencrypt\""
+                  echo "      - \"traefik.http.routers.$TARGET_ROUTE.entrypoints=websecure\""
+                  echo "      - \"traefik.http.routers.$TARGET_ROUTE.middlewares=redirect-to-https\""
+                  echo "      - \"traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https\""
+                  echo "      - \"traefik.docker.network=${{ steps.setup.outputs.network }}\""
+                } >> "$OUTPUT_FILE"
+                break
+              fi
+            done <<< "$TARGETS"
+            if ! $target_found; then
+              {
+                echo "  $actual_service:"
+                echo "    networks:"
+                echo "      - default"
+              } >> "$OUTPUT_FILE"
+            fi
+          fi
+        done < "$INPUT_FILE"
+        
+        echo "Generated OUTPUT FILE is: $OUTPUT_FILE"
+        cat $OUTPUT_FILE
+
+    - id: copy
+      name: copy files fia ssh
+      shell: bash
+      env:
+        TARGET_PATH: /data/compose/${{ github.event.repository.name }}${{ inputs.is_dev_deployment == 'true' && '-dev' || '' }}
+      run: |
+        echo ""
+        echo "========== COPY REPOSITORY TO REMOTE =========="
+        echo ""
+        
+        if [ -d "./.git" ] || [ -f "./.git" ]; then
+          echo "Deleting folder ./.git"
+          rm -rf "./.git"
+        else
+          echo "Skipping ./.git (not found)"
+        fi
+        if [ -d "./.github" ] || [ -f "./.github" ]; then
+          echo "Deleting folder ./.github"
+          rm -rf "./.github"
+        else
+          echo "Skipping ./.github (not found)"
+        fi
+        
+        echo "${{ inputs.delete_before_deploy }}" | tr -s '[:space:]' '\n' | while read -r folder; do
+          # Skip empty lines
+          [[ -z "$folder" ]] && continue
+        
+          if [ -d "$folder" ] || [ -f "$folder" ]; then
+            echo "Deleting folder $folder"
+            rm -rf "$folder"
+          else
+            echo "Skipping $folder (not found)"
+          fi
+        done
+        
+        ssh -o StrictHostKeyChecking=no sshserver << EOF
+          cd ${{ env.TARGET_PATH }}
+          echo "STOP docker containers before copy"
+          docker compose down
+          cd /
+          rm -rf ${{ env.TARGET_PATH }}
+          mkdir -p ${{ env.TARGET_PATH }}
+        EOF
+        scp -o StrictHostKeyChecking=no -r ./ sshserver:${{ env.TARGET_PATH }}/
+
+    - id: network
+      name: init docker network
+      shell: bash
+      run: |
+        echo ""
+        echo "========== CREATE DOCKER NETWORK =========="
+        echo ""
+        
+        NETWORK_NAME=${{ steps.setup.outputs.network }}
+        
+        ssh -o StrictHostKeyChecking=no sshserver << EOF
+          # Check if the Docker network exists; if not, create it
+          if ! docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
+            docker network create "$NETWORK_NAME"
+            echo "CREATED: Docker network - $NETWORK_NAME"
+          else
+            echo "EXIST: Docker network present - $NETWORK_NAME"
+          fi
+        
+          # Connect main traefik (hardcoded - coolify-proxy) to created network
+          for container_name in \$(docker ps --format '{{.Names}}' | grep "^coolify-proxy$"); do
+            container_id=\$(docker inspect -f '{{.Id}}' "\$container_name")
+            if ! docker inspect -f '{{json .NetworkSettings.Networks}}' "\$container_id" | grep -q "$NETWORK_NAME"; then
+              docker network connect "$NETWORK_NAME" "\$container_id"
+              echo "TRAEFIK CONNECTED: container to -> $NETWORK_NAME : \$container_name"
+            else
+              echo "TRAEFIK EXISTED: already in -> $NETWORK_NAME : \$container_name"
+            fi
+          done
+          # Connect all containers with 'traefik' image to created network
+          #for container_id in \$(docker ps --format '{{.ID}}'); do
+          #  container_image=\$(docker inspect -f '{{.Config.Image}}' "\$container_id")
+          #  if echo "\$container_image" | grep -qi 'traefik'; then
+          #    # Check if container exposes any ports publicly (host bindings)
+          #    container_ports=\$(docker inspect -f '{{json .HostConfig.PortBindings}}' "\$container_id")
+          # 
+          #    # The port bindings JSON will be null if no bindings; or a JSON object if bindings exist
+          #    if [ "\$container_ports" != "null" ] && [ "\$container_ports" != "{}" ]; then
+          #      # Only connect if not already connected
+          #      if ! docker inspect -f '{{json .NetworkSettings.Networks}}' "\$container_id" | grep -q "$NETWORK_NAME"; then
+          #        docker network connect "$NETWORK_NAME" "\$container_id"
+          #        echo "TRAEFIK CONNECTED: container to -> $NETWORK_NAME : \$(docker inspect -f '{{.Name}}' \$container_id)"
+          #      else
+          #        echo "TRAEFIK EXISTED: already in -> $NETWORK_NAME : \$(docker inspect -f '{{.Name}}' \$container_id)"
+          #      fi
+          #    else
+          #      echo "TRAEFIK SKIPPED: no public port bindings -> \$(docker inspect -f '{{.Name}}' \$container_id)"
+          #    fi
+          #  fi
+          #done
+        
+          # Connect specified containers by name to same created network
+          echo "${{ inputs.joiner_container }}" | tr -s '[:space:]' '\n' | while read -r joiner; do
+            [[ -z "\$joiner" ]] && continue
+            for container in \$(docker ps --format '{{.Names}}' | grep "^\${joiner}$"); do
+              ID=\$(docker inspect -f '{{.Id}}' "\$container")
+              if ! docker inspect -f '{{json .NetworkSettings.Networks}}' "\$ID" | grep -q "$NETWORK_NAME"; then
+                docker network connect "$NETWORK_NAME" "\$ID"
+                echo "JOINER(\$joiner) CONNECTED: container to -> $NETWORK_NAME : \$container"
+              else
+                echo "JOINER(\$joiner) EXISTED: already in -> $NETWORK_NAME : \$container"
+              fi
+            done
+          done
+        EOF
+
+    - id: execute
+      name: execute setup
+      shell: bash
+      env:
+        TARGET_PATH: /data/compose/${{ github.event.repository.name }}${{ inputs.is_dev_deployment == 'true' && '-dev' || '' }}
+      run: |
+        echo ""
+        echo "========== EXECUTE SETUP =========="
+        echo ""
+
+        echo "START docker containers: docker compose -f docker-compose.deploy.yml -f docker-compose.override.yml up -d --remove-orphans"
+
+        ssh -o StrictHostKeyChecking=no sshserver << EOF
+          cd ${{ env.TARGET_PATH }}
+
+          INPUT_PROPERTIES='${{ inputs.env }}'
+
+          (
+            while IFS= read -r line; do
+              [[ -z "\$line" ]] && continue
+              if [[ "\$line" == *"../"* ]]; then
+                echo "SKIP: invalid property - \$line"
+                continue
+              fi
+              eval "tokens=(\$line)"
+        
+              for token in "\${tokens[@]}"; do
+                IFS='=' read -r key value <<< "\$token"
+                export "\$key=\$value"
+              done
+            done <<< "\$INPUT_PROPERTIES"
+            docker compose -f docker-compose.deploy.yml -f docker-compose.override.yml up -d --remove-orphans
+          )
+
+          unset INPUT_PROPERTIES
+          unset ENV_PROPERTIES
+
+          echo "CLEAN: delete unused images"
+          docker image prune -a -f
+          docker builder prune -a -f
+        EOF

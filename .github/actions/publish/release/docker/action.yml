@@ -1,0 +1,222 @@
+# FILE: ./.github/actions/publish/release/docker/action.yml
+# DESCRIPTION: allows publishing docker images to GitHub Container Registry (GHCR.IO)
+#              build docker image using Dockerfile provided
+#              TAG it based on build running from
+#                * if build is Release+Published - takes a release version and use it as tag
+#                * if build is master-branch-based - uses 'master-*' as prefix for name
+#                * if build is any dev-branch-based - uses 'dev-{short-branch-name}-*' as prefix for name
+#              keeps only last {NUMBER} of release/master/dev images in GHCR which is older than {DAYS}
+
+name: 'PUBLISH Docker Image to GHCR.io'
+description: 'Build and Push docker image to GitHub Container Registry (GHCR.io)'
+
+inputs:
+  dockerfile:
+    description: 'Path to Dockerfile - relative to context'
+    required: false
+    default: './Dockerfile'
+  image-name:
+    description: 'Name of the final docker image (example: "image-name")'
+    required: false
+    default: ${{ github.event.repository.name }}
+  context:
+    description: 'Path to Build Context - directory containing Dockerfile'
+    required: false
+    default: './'
+  tags:
+    description: 'List of Comma-separated additional tags to apply to the image'
+    required: false
+    default: ''
+  push:
+    description: 'Whether to push the image to the registry.'
+    required: false
+    default: 'true' # Default to true for publishing action
+  cache-from:
+    description: 'Docker cache source - type=gha'
+    required: false
+    default: 'type=gha'
+  cache-to:
+    description: 'Docker cache destination - type=gha,mode=max'
+    required: false
+    default: 'type=gha,mode=max'
+  github-token:
+    description: 'GitHub token for authentication with GHCR.io. Defaults to GITHUB_TOKEN.'
+    required: true # Make it required to ensure it's passed
+    default: '${{ github.token }}' # Use the GITHUB_TOKEN from the calling workflow
+  keep-last-releases:
+    description: 'Keep last N number of release images (older then 6months)'
+    required: false
+    default: '25'
+  keep-last-master:
+    description: 'Keep last N number of master images (older then 1day)'
+    required: false
+    default: '10'
+  keep-last-dev:
+    description: 'Keep last N number of dev images (older then 1day)'
+    required: false
+    default: '10'
+
+outputs:
+  image-name:
+    description: 'Provides final name of the image created'
+    value: ${{ steps.variables.outputs.image-name }}
+  image-digest:
+    description: 'Digest of the pushed Docker image'
+    value: ${{ steps.build-and-push.outputs.digest }}
+  image-tags:
+    description: 'List of comma-separated tags applied to the image'
+    value: ${{ steps.meta.outputs.tags }}
+  image-tag:
+    description: 'Single most relevant tag name (not "-latest")'
+    value: ${{ steps.extract.outputs.tag }}
+
+runs:
+  using: composite
+  steps:
+
+    - name: export variables
+      id: variables
+      shell: bash
+      run: |
+        SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+        SHORT_BRANCH=${{ github.ref_name }}
+        SHORT_BRANCH=${SHORT_BRANCH#*/}
+        SHORT_BRANCH=${SHORT_BRANCH:0:7}
+        SHORT_BRANCH=${SHORT_BRANCH%-}
+        VERSION=${{ github.ref_name }}
+        echo "short sha is: ${SHORT_SHA}"
+        echo "sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+        echo "today=$(date +"%y%m%d")" >> $GITHUB_OUTPUT
+        echo "branch=${SHORT_BRANCH}" >> $GITHUB_OUTPUT
+        echo "version=${VERSION#v}" >> $GITHUB_OUTPUT
+        
+        if [[ "${{ inputs.image-name }}" != "${{ github.event.repository.name }}" ]]; then
+          echo "image-name=${{ github.event.repository.name }}-${{ inputs.image-name }}" >> $GITHUB_OUTPUT
+        else
+          echo "image-name=${{ inputs.image-name }}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to the Container registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.github-token }}
+
+    - name: Extract metadata (tags, labels) for Docker
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ghcr.io/${{ github.repository_owner }}/${{ steps.variables.outputs.image-name }}
+        tags: |
+          # ===========   RELEASE TAGS   ========== #
+          type=raw,value=latest,enable=${{ github.event_name == 'release' && github.event.action == 'published' }}
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=semver,pattern={{major}}
+          
+          # ===========    BRANCH TAGS   ========== #
+          # sha-abc123d.11     ::    adds short git sha
+          # type=raw,value=sha-${{ steps.variables.outputs.sha }}.${{github.run_number}},enable=${{ github.ref_type == 'branch' }}
+          
+          # master-abc123d.11  ::    adds default branch build
+          # master-latest      ::    with latest
+          # master-11          ::    with build
+          type=raw,value=${{ github.event.repository.default_branch }}-${{ steps.variables.outputs.sha }}.${{github.run_number}},enable=${{ github.event_name != 'release' && github.ref_name == github.event.repository.default_branch }}
+          type=raw,value=${{ github.event.repository.default_branch }}-latest,enable=${{ github.event_name != 'release' && github.ref_name == github.event.repository.default_branch }}
+          type=raw,value=${{ github.event.repository.default_branch }}-${{github.run_number}},enable=${{ github.event_name != 'release' && github.ref_name == github.event.repository.default_branch }}
+          
+          # dev-branchn-latest ::    adds develop branch latest (uses  first 7 symbols of branch name)
+          # dev-branchn.11     ::    with develop branch build
+          # dev-latest         ::    with dev latest
+          # dev-11             ::    with dev build
+          type=raw,value=dev-${{ steps.variables.outputs.branch }}.${{ github.run_number }},enable=${{ github.event_name != 'release' && github.ref_name != github.event.repository.default_branch }}
+          type=raw,value=dev-${{ steps.variables.outputs.branch }}-latest,enable=${{ github.event_name != 'release' && github.ref_name != github.event.repository.default_branch }}
+          type=raw,value=dev-latest,enable=${{ github.event_name != 'release' && github.ref_name != github.event.repository.default_branch }}
+          type=raw,value=dev-${{ github.run_number }},enable=${{ github.event_name != 'release' && github.ref_name != github.event.repository.default_branch }}
+          
+          # ============   CUSTOM TAGS   ========== #
+          ${{ inputs.tags }}
+
+    - name: Build and push Docker image
+      id: build-and-push
+      uses: docker/build-push-action@v6
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.dockerfile }}
+        push: ${{ inputs.push }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: ${{ inputs.cache-from }}
+        cache-to: ${{ inputs.cache-to }}
+        provenance: false # do not generate manifests images
+
+    - name: Extract relevant tag
+      id: extract
+      shell: bash
+      run: |
+        if [[ "${{ github.event_name }}" == "release" && "${{ github.event.action }}" == "published" ]]; then
+          RELEVANT_TAG=${{ steps.meta.outputs.version }}
+        fi
+        if [[ "${{ github.event_name }}" != "release" && "${{ github.ref_name }}" == "${{ github.event.repository.default_branch }}" ]]; then
+          RELEVANT_TAG=${{ github.event.repository.default_branch }}-${{ steps.variables.outputs.sha }}.${{github.run_number}}
+        fi
+        if [[ "${{ github.event_name }}" != "release" && "${{ github.ref_name }}" != "${{ github.event.repository.default_branch }}" ]]; then
+          RELEVANT_TAG=dev-${{ steps.variables.outputs.branch }}.${{ github.run_number }}
+        fi
+        echo "tag=${RELEVANT_TAG}" >> $GITHUB_OUTPUT
+
+        echo "## 📃 Docker Image summary : ${{ steps.variables.outputs.image-name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- 🏷️ tag: \`ghcr.io/${{ github.repository_owner }}/${{ steps.variables.outputs.image-name }}:${RELEVANT_TAG}\`" >> $GITHUB_STEP_SUMMARY
+        echo "<details><summary><strong>Available tags</strong></summary><pre lang="text"><code>" >> $GITHUB_STEP_SUMMARY
+        echo "digest: @${{ steps.build-and-push.outputs.digest }}" >> $GITHUB_STEP_SUMMARY
+        echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+        echo "</code></pre></details>" >> $GITHUB_STEP_SUMMARY
+
+    # image-tags: - must contain all tags of an image to be removed ('master*' - pattern for all tags existed)
+    # if the image has: master-123 sha-123 - then image-tags also should mention that (or else nothing deleted)
+    - name: Clean Snapshots (dev)
+      uses: snok/container-retention-policy@v3.0.0
+      with:
+        account: ${{ github.repository_owner }}
+        token: ${{ inputs.github-token }}
+        image-names: ${{ steps.variables.outputs.image-name }}
+
+        # Retention policies (customize these)
+        keep-n-most-recent: ${{ inputs.keep-last-dev }}
+        cut-off: 1day
+        image-tags: "dev*"
+        tag-selection: both
+        timestamp-to-use: created_at
+
+    - name: Clean Snapshots (master)
+      uses: snok/container-retention-policy@v3.0.0
+      with:
+        account: ${{ github.repository_owner }}
+        token: ${{ inputs.github-token }}
+        image-names: ${{ steps.variables.outputs.image-name }}
+
+        # Retention policies (customize these)
+        keep-n-most-recent: ${{ inputs.keep-last-master }}
+        cut-off: 1day
+        image-tags: "master*"
+        tag-selection: both
+        timestamp-to-use: created_at
+
+    - name: Clean Releases (on Release)
+      if: github.event_name == 'release'
+      uses: snok/container-retention-policy@v3.0.0
+      with:
+        account: ${{ github.repository_owner }}
+        token: ${{ inputs.github-token }}
+        image-names: ${{ steps.variables.outputs.image-name }}
+
+        # Retention policies (customize these)
+        keep-n-most-recent: ${{ inputs.keep-last-releases }}
+        cut-off: 6months
+        image-tags: "!master* !dev*"
+        tag-selection: both
+        timestamp-to-use: created_at
