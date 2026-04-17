@@ -140,7 +140,7 @@ runs:
             done <<< "\$INPUT_PROPERTIES"
 
             docker compose -f ${{ inputs.compose_file }} pull
-            # docker compose -f ${{ inputs.compose_file }} up -d --remove-orphans
+            docker compose -f ${{ inputs.compose_file }} up -d --remove-orphans
           )
 
           unset INPUT_PROPERTIES
