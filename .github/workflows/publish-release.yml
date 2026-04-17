@@ -80,9 +80,6 @@ jobs:
           ssh_private_host: ${{ secrets.WLGDEV_SSH_PRIVATE_HOST }}
           ssh_private_port: ${{ secrets.WLGDEV_SSH_PRIVATE_PORT }}
           ssh_private_user: ${{ secrets.WLGDEV_SSH_PRIVATE_USER }}
-          delete_before_deploy:
-            ./docs
-            ./test
           compose_file: './docker-compose.yml'
           env:
             SERVICE_IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/${{ needs.publish-service.outputs.image-name }}

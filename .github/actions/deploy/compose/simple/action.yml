@@ -14,9 +14,6 @@ inputs:
   ssh_private_user:
     required: true
     description: 'ssh: host user'
-  delete_before_deploy:
-    required: false
-    description: "delete folders before running 'docker compose up'"
   compose_file:
     required: false
     description: "default: ./docker-compose.yml - path to compose file"
@@ -94,48 +91,21 @@ runs:
 
 
     - id: copy
-      name: copy files via ssh
+      name: copy compose file via ssh
       shell: bash
       env:
         TARGET_PATH: /data/compose/${{ github.event.repository.name }}
       run: |
         echo ""
-        echo "========== COPY REPOSITORY TO REMOTE =========="
+        echo "========== COPY COMPOSE FILE TO REMOTE =========="
         echo ""
-        
-        if [ -d "./.git" ] || [ -f "./.git" ]; then
-          echo "Deleting folder ./.git"
-          rm -rf "./.git"
-        else
-          echo "Skipping ./.git (not found)"
-        fi
-        if [ -d "./.github" ] || [ -f "./.github" ]; then
-          echo "Deleting folder ./.github"
-          rm -rf "./.github"
-        else
-          echo "Skipping ./.github (not found)"
-        fi
-        
-        echo "${{ inputs.delete_before_deploy }}" | tr -s '[:space:]' '\n' | while read -r folder; do
-          [[ -z "$folder" ]] && continue
-        
-          if [ -d "$folder" ] || [ -f "$folder" ]; then
-            echo "Deleting folder $folder"
-            rm -rf "$folder"
-          else
-            echo "Skipping $folder (not found)"
-          fi
-        done
-        
+
         ssh -o StrictHostKeyChecking=no sshserver << EOF
-          cd ${{ env.TARGET_PATH }}
-          echo "STOP docker containers before copy"
-          docker compose down
-          cd /
-          rm -rf ${{ env.TARGET_PATH }}
           mkdir -p ${{ env.TARGET_PATH }}
+          mkdir -p ${{ env.TARGET_PATH }}/tmp
+          mkdir -p ${{ env.TARGET_PATH }}/data
         EOF
-        scp -o StrictHostKeyChecking=no -r ./ sshserver:${{ env.TARGET_PATH }}/
+        scp -o StrictHostKeyChecking=no ${{ inputs.compose_file }} sshserver:${{ env.TARGET_PATH }}/docker-compose.yml
 
     - id: execute
       name: execute setup
@@ -169,7 +139,7 @@ runs:
               done
             done <<< "\$INPUT_PROPERTIES"
 
-            # docker compose -f ${{ inputs.compose_file }} pull
+            docker compose -f ${{ inputs.compose_file }} pull
             # docker compose -f ${{ inputs.compose_file }} up -d --remove-orphans
           )
 
