@@ -2,8 +2,6 @@ services:
   bot:
     image: ${SERVICE_IMAGE_NAME}:${SERVICE_IMAGE_TAG}
     restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ./tmp:/app/tmp
       - ./data:/app/data
