@@ -1,7 +1,5 @@
-FROM alpine:latest
-RUN apk add --no-cache ca-certificates tzdata
+FROM gcr.io/distroless/static:nonroot
 WORKDIR /app
 ARG APP_NAME
 COPY ${APP_NAME} /app/app
-RUN mkdir -p /app/tmp /app/data
 ENTRYPOINT ["/app/app"]
