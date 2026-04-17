@@ -2,9 +2,11 @@ services:
   bot:
     image: ${SERVICE_IMAGE_NAME}:${SERVICE_IMAGE_TAG}
     restart: unless-stopped
+
     volumes:
       - ./tmp:/app/tmp
       - ./data:/app/data
+
     environment:
       - ENV=${ENV}
       - API_ID=${API_ID}
@@ -21,3 +23,11 @@ services:
       - FILE_SIZE_LIMIT=${FILE_SIZE_LIMIT}
       - LOG_LEVEL=${LOG_LEVEL}
       - OTLP_ENDPOINT=${OTLP_ENDPOINT}
+
+    networks:
+      - monitor
+
+networks:
+  monitor:
+    external: true
+    name: monitor_default
