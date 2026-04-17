@@ -1,0 +1,103 @@
+# File .github/workflows/publish-release.yml
+
+# Runs on creating a new release tag (when this release marked as published),
+# this workflow publishes artifact and does increment the next SNAPSHOT version
+
+name: publish RELEASE
+on:
+  release:
+    types:
+      - published
+
+jobs:
+  repository: # SERVICE LEVEL - CHECK AND SHARE VARIABLES
+    if: ${{ !startsWith(github.repository, 'wlgdev/template-') }}
+    runs-on: ubuntu-latest
+    outputs:
+      type: ${{ steps.validate.outputs.type }}
+      language: ${{ steps.validate.outputs.language }}
+      environment: ${{ steps.validate.outputs.environment }}
+    env:
+      REPOSITORY_TYPE:     $(jq -r '.repository.custom_properties.type     | select(. != null and . != "unknown") // "default"' < "$GITHUB_EVENT_PATH")
+      REPOSITORY_LANGUAGE: $(jq -r '.repository.custom_properties.language | select(. != null and . != "unknown") // "default"' < "$GITHUB_EVENT_PATH")
+    steps:
+      - name: validate repository type
+        id: validate
+        run: |
+          echo "repository type:     ${{ env.REPOSITORY_TYPE }}"
+          echo "repository language: ${{ env.REPOSITORY_LANGUAGE }}"
+          echo "type=${{ env.REPOSITORY_TYPE }}" >> $GITHUB_OUTPUT
+          echo "language=${{ env.REPOSITORY_LANGUAGE }}" >> $GITHUB_OUTPUT
+          echo "environment=PRODUCTION" >> $GITHUB_OUTPUT
+
+  publish-service:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write     # Crucial for pushing package
+      attestations: write # Optional, for supply-chain security
+      id-token: write     # Optional, for OIDC
+    outputs:
+      image-name: ${{ steps.publish.outputs.image-name }}
+      image-tags: ${{ steps.publish.outputs.image-tags }}
+      image-tag:  ${{ steps.publish.outputs.image-tag }}
+      image-digest: ${{ steps.publish.outputs.image-digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+      - name: Compile Project
+        run: GOOS=linux GOARCH=amd64 go build -o ${{ github.event.repository.name }} ./cmd/main.go
+
+      - name: Build and Publish Docker Image to GHCR
+        id: publish
+        uses: ./.github/actions/publish/release/docker
+        with:
+          build-args: |
+            APP_NAME=${{ github.event.repository.name }}
+
+      - name: Output Image Digest and Tags
+        run: |
+          echo "Image Name: ${{ steps.publish.outputs.image-name }}"
+          echo "Image Digest: ${{ steps.publish.outputs.image-digest }}"
+          echo "Image Tags: ${{ steps.publish.outputs.image-tags }}"
+
+  deploy:
+    environment: PRODUCTION
+    needs: publish-service
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: deploy
+        id: deploy
+        # Changed to our simple deploy action
+        uses: ./.github/actions/deploy/compose/simple
+        with:
+          ssh_private_key:  ${{ secrets.WLGDEV_SSH_PRIVATE_KEY }}
+          ssh_private_host: ${{ secrets.WLGDEV_SSH_PRIVATE_HOST }}
+          ssh_private_port: ${{ secrets.WLGDEV_SSH_PRIVATE_PORT }}
+          ssh_private_user: ${{ secrets.WLGDEV_SSH_PRIVATE_USER }}
+          delete_before_deploy:
+            ./docs
+            ./test
+          compose_file: './docker-compose.yml'
+          env:
+            SERVICE_IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/${{ needs.publish-service.outputs.image-name }}
+            SERVICE_IMAGE_DIGEST=${{ needs.publish-service.outputs.image-digest }}
+            SERVICE_IMAGE_TAG=${{ needs.publish-service.outputs.image-tag }}
+            ENV=production
+            API_ID=${{ secrets.API_ID }}
+            API_HASH=${{ secrets.API_HASH }}
+            TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+            TELEGRAM_TARGET_CHANNEL_ID=${{ secrets.TELEGRAM_TARGET_CHANNEL_ID }}
+            TELEGRAM_ADMINS=${{ secrets.TELEGRAM_ADMINS }}
+            MAX_BOT_TOKEN=${{ secrets.MAX_BOT_TOKEN }}
+            MAX_TARGET_CHAT_ID=${{ secrets.MAX_TARGET_CHAT_ID }}
+            VK_TOKEN=${{ secrets.VK_TOKEN }}
+            VK_GROUP_ID=${{ secrets.VK_GROUP_ID }}
+            FILE_SIZE_LIMIT=${{ secrets.FILE_SIZE_LIMIT }}
+            LOG_LEVEL=${{ secrets.LOG_LEVEL }}
+            OTLP_ENDPOINT=${{ secrets.OTLP_ENDPOINT }}

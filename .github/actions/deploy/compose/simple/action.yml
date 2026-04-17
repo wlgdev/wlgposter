@@ -1,0 +1,182 @@
+name: 'deploy [DOCKER-COMPOSE] (SIMPLE)'
+description: 'Uploads compose files via SSH and starts containers'
+
+inputs:
+  ssh_private_key:
+    required: true
+    description: 'ssh: private key'
+  ssh_private_host:
+    required: true
+    description: 'ssh: host name'
+  ssh_private_port:
+    required: true
+    description: 'ssh: host port'
+  ssh_private_user:
+    required: true
+    description: 'ssh: host user'
+  delete_before_deploy:
+    required: false
+    description: "delete folders before running 'docker compose up'"
+  compose_file:
+    required: false
+    description: "default: ./docker-compose.yml - path to compose file"
+    default: "./docker-compose.yml"
+  env:
+    required: false
+    description: 'list of env variables to pass to docker compose'
+
+runs:
+  using: "composite"
+  steps:
+    - id: ssh
+      name: create ssh configuration
+      shell: bash
+      env:
+        SSH_DIR: /home/runner/.ssh
+        SSH_RSA_ID: /home/runner/.ssh/id_rsa
+      run: |
+        echo ""
+        echo "========== SSH CONNECTION KEYS =========="
+        echo ""
+        
+        echo "Starting SSH configuration..."
+        echo "Checking variables..."
+        if [ -z "${{ inputs.ssh_private_key }}" ]; then echo "ERROR: ssh_private_key is empty"; exit 1; fi
+        if [ -z "${{ inputs.ssh_private_host }}" ]; then echo "ERROR: ssh_private_host is empty"; exit 1; fi
+        if [ -z "${{ inputs.ssh_private_user }}" ]; then echo "ERROR: ssh_private_user is empty"; exit 1; fi
+        if [ -z "${{ inputs.ssh_private_port }}" ]; then echo "ERROR: ssh_private_port is empty"; exit 1; fi
+        if [ -z "${{ env.SSH_RSA_ID }}" ]; then echo "ERROR: SSH_RSA_ID is empty"; exit 1; fi
+        
+        
+        echo "Creating .ssh directory..."
+        mkdir -p "${SSH_DIR}"
+        
+        echo "Setting up private key..."
+        if [ -f "${{ env.SSH_RSA_ID }}" ]; then
+          rm "${{ env.SSH_RSA_ID }}"
+        fi
+        echo "Writing up private key..."
+        echo "${{ inputs.ssh_private_key }}" | tr -d '\r' > "${{ env.SSH_RSA_ID }}"
+        
+        echo "Setting permissions..."
+        chmod 700 "${SSH_DIR}"
+        chmod 600 "${{ env.SSH_RSA_ID }}"
+        
+        echo "Creating SSH config..."
+
+        cat <<EOF >> "${SSH_DIR}/config"
+        Host sshserver
+            HostName ${{ inputs.ssh_private_host }}
+            User ${{ inputs.ssh_private_user }}
+            Port ${{ inputs.ssh_private_port }}
+            IdentityFile ${{ env.SSH_RSA_ID }}
+            StrictHostKeyChecking accept-new
+        EOF
+        
+        echo "Check host is available..."
+        nc -zv ${{ inputs.ssh_private_host }} ${{ inputs.ssh_private_port }} 2>&1 || {
+          echo "ERROR: Could not connect to host ${{ inputs.ssh_private_host }} on port ${{ inputs.ssh_private_port }}"
+          exit 1
+        }
+
+        echo "Running ssh-keyscan..."
+        ssh-keyscan -v -p ${{ inputs.ssh_private_port }} -H "${{ inputs.ssh_private_host }}" >> "${SSH_DIR}/known_hosts" 2>&1 || {
+          echo "ssh-keyscan failed with status $?"
+          echo "Content of known_hosts:"
+          cat "${SSH_DIR}/known_hosts"
+          exit 1
+        }
+        
+        echo "Testing SSH config..."
+        ls -la "${SSH_DIR}"
+        cat "${SSH_DIR}/config"
+        echo "SSH configuration completed"
+
+
+    - id: copy
+      name: copy files via ssh
+      shell: bash
+      env:
+        TARGET_PATH: /data/compose/${{ github.event.repository.name }}
+      run: |
+        echo ""
+        echo "========== COPY REPOSITORY TO REMOTE =========="
+        echo ""
+        
+        if [ -d "./.git" ] || [ -f "./.git" ]; then
+          echo "Deleting folder ./.git"
+          rm -rf "./.git"
+        else
+          echo "Skipping ./.git (not found)"
+        fi
+        if [ -d "./.github" ] || [ -f "./.github" ]; then
+          echo "Deleting folder ./.github"
+          rm -rf "./.github"
+        else
+          echo "Skipping ./.github (not found)"
+        fi
+        
+        echo "${{ inputs.delete_before_deploy }}" | tr -s '[:space:]' '\n' | while read -r folder; do
+          [[ -z "$folder" ]] && continue
+        
+          if [ -d "$folder" ] || [ -f "$folder" ]; then
+            echo "Deleting folder $folder"
+            rm -rf "$folder"
+          else
+            echo "Skipping $folder (not found)"
+          fi
+        done
+        
+        ssh -o StrictHostKeyChecking=no sshserver << EOF
+          cd ${{ env.TARGET_PATH }}
+          echo "STOP docker containers before copy"
+          docker compose down
+          cd /
+          rm -rf ${{ env.TARGET_PATH }}
+          mkdir -p ${{ env.TARGET_PATH }}
+        EOF
+        scp -o StrictHostKeyChecking=no -r ./ sshserver:${{ env.TARGET_PATH }}/
+
+    - id: execute
+      name: execute setup
+      shell: bash
+      env:
+        TARGET_PATH: /data/compose/${{ github.event.repository.name }}
+      run: |
+        echo ""
+        echo "========== EXECUTE SETUP =========="
+        echo ""
+
+        echo "START docker containers: docker compose -f ${{ inputs.compose_file }} up -d --remove-orphans"
+
+        ssh -o StrictHostKeyChecking=no sshserver << EOF
+          cd ${{ env.TARGET_PATH }}
+
+          INPUT_PROPERTIES='${{ inputs.env }}'
+
+          (
+            while IFS= read -r line; do
+              [[ -z "\$line" ]] && continue
+              if [[ "\$line" == *"../"* ]]; then
+                echo "SKIP: invalid property - \$line"
+                continue
+              fi
+              eval "tokens=(\$line)"
+        
+              for token in "\${tokens[@]}"; do
+                IFS='=' read -r key value <<< "\$token"
+                export "\$key=\$value"
+              done
+            done <<< "\$INPUT_PROPERTIES"
+
+            # docker compose -f ${{ inputs.compose_file }} pull
+            # docker compose -f ${{ inputs.compose_file }} up -d --remove-orphans
+          )
+
+          unset INPUT_PROPERTIES
+          unset ENV_PROPERTIES
+
+          echo "CLEAN: delete unused images"
+          docker image prune -a -f
+          docker builder prune -a -f
+        EOF

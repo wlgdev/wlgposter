@@ -55,6 +55,11 @@ inputs:
     description: 'Keep last N number of dev images (older then 1day)'
     required: false
     default: '10'
+  # added: allows passing build arguments to docker build
+  build-args:
+    description: 'Newline-separated list of build-time variables (e.g. APP_NAME=myapp)'
+    required: false
+    default: ''
 
 outputs:
   image-name:
@@ -152,6 +157,8 @@ runs:
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: ${{ inputs.cache-from }}
         cache-to: ${{ inputs.cache-to }}
+        # added: pass build arguments to Dockerfile
+        build-args: ${{ inputs.build-args }}
         provenance: false # do not generate manifests images
 
     - name: Extract relevant tag

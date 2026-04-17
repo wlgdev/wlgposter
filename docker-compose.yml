@@ -1,0 +1,23 @@
+services:
+  bot:
+    image: ${SERVICE_IMAGE_NAME}:${SERVICE_IMAGE_TAG}
+    restart: unless-stopped
+    volumes:
+      - ./tmp:/app/tmp
+      - ./data:/app/data
+    environment:
+      - ENV=${ENV}
+      - API_ID=${API_ID}
+      - API_HASH=${API_HASH}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_TARGET_CHANNEL_ID=${TELEGRAM_TARGET_CHANNEL_ID}
+      - TELEGRAM_ADMINS=${TELEGRAM_ADMINS}
+      - MAX_BOT_TOKEN=${MAX_BOT_TOKEN}
+      - MAX_TARGET_CHAT_ID=${MAX_TARGET_CHAT_ID}
+      - VK_TOKEN=${VK_TOKEN}
+      - VK_GROUP_ID=${VK_GROUP_ID}
+      - TMP_DIR=/app/tmp
+      - DB=/app/data
+      - FILE_SIZE_LIMIT=${FILE_SIZE_LIMIT}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - OTLP_ENDPOINT=${OTLP_ENDPOINT}
