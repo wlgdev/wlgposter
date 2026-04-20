@@ -1,0 +1,28 @@
+# File .github/workflows/examples/example-loop
+on:
+  workflow_dispatch:
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.project }}
+    steps:
+      - name: Setup
+        id: matrix
+        run: |
+          echo "project=[ \
+              \"a\",      \
+              \"b\",      \
+              \"c\"       \
+          ]" >> $GITHUB_OUTPUT
+  build:
+    needs:
+      - setup
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        project: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      - run: |
+          echo "in loop: ${{ matrix.project }}"

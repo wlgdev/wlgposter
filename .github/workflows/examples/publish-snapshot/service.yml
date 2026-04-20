@@ -1,0 +1,111 @@
+# File .github/workflows/publish-snapshot.yml
+
+# Runs on push to branches (/feature/hotfix/)
+# this workflow publishes SNAPSHOT maven artifact
+
+name: publish SNAPSHOT
+on:
+  push:
+    branches:
+      - 'master'
+      - 'feature/**'
+      - 'hotfix/**'
+  workflow_dispatch:
+
+env:
+  GITHUB_ACTIONS_NAME: github-actions[bot]
+
+jobs:
+  repository: # SERVICE LEVEL - CHECK AND SHARE VARIABLES
+    if: ${{ !startsWith(github.repository, 'wlgdev/template-') }}
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.is_required.outputs.run }}
+      type: ${{ steps.validate.outputs.type }}
+      language: ${{ steps.validate.outputs.language }}
+      environment: ${{ steps.validate.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: is publish required
+        id: is_required
+        run: |
+          COMMIT_AUTHOR=$(git log -1 --pretty=format:'%an')
+          if [[ "$COMMIT_AUTHOR" == "${{ env.GITHUB_ACTIONS_NAME }}" ]]; then
+            echo "run=false" >> $GITHUB_OUTPUT
+            echo "SKIP: SNAPSHOT publication not required"
+          else
+            echo "run=true" >> $GITHUB_OUTPUT
+            echo "PROCESS: SNAPSHOT publication required"
+          fi
+
+      - name: validate repository type
+        id: validate
+        env:
+          REPOSITORY_TYPE:     $(jq -r '.repository.custom_properties.type     | select(. != null and . != "unknown") // "default"' < "$GITHUB_EVENT_PATH")
+          REPOSITORY_LANGUAGE: $(jq -r '.repository.custom_properties.language | select(. != null and . != "unknown") // "default"' < "$GITHUB_EVENT_PATH")
+        run: |
+          echo "repository type:     ${{ env.REPOSITORY_TYPE }}"
+          echo "repository language: ${{ env.REPOSITORY_LANGUAGE }}"
+          echo "type=${{ env.REPOSITORY_TYPE }}" >> $GITHUB_OUTPUT
+          echo "language=${{ env.REPOSITORY_LANGUAGE }}" >> $GITHUB_OUTPUT
+          echo "environment=TEST" >> $GITHUB_OUTPUT
+
+  publish-service:
+    needs: repository
+    if: needs.repository.outputs.run == 'true' && needs.repository.outputs.type == 'service'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write     # Crucial for pushing package
+      attestations: write # Optional, for supply-chain security
+      id-token: write     # Optional, for OIDC
+    outputs:
+      image-name: ${{ steps.publish.outputs.image-name }}
+      image-tags: ${{ steps.publish.outputs.image-tags }}
+      image-tag:  ${{ steps.publish.outputs.image-tag }}
+      image-digest: ${{ steps.publish.outputs.image-digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # compile the project
+      # - name: Compile Project
+      #   id: compile
+      #   run: something...
+
+      - name: Build and Publish Docker Image to GHCR
+        id: publish
+        uses: ./.github/actions/publish/snapshot/docker
+
+      - name: Output Image Digest and Tags
+        run: |
+          echo "Image Name: ${{ steps.publish.outputs.image-name }}"
+          echo "Image Digest: ${{ steps.publish.outputs.image-digest }}"
+          echo "Image Tags: ${{ steps.publish.outputs.image-tags }}"
+
+  deploy:
+    environment: ${{ needs.repository.outputs.environment }}
+    needs:
+      - repository
+      - publish-service
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: deploy
+        id: deploy
+        uses: ./.github/actions/deploy/compose/traefik
+        with:
+          ssh_private_key:  ${{ secrets.WLGDEV_SSH_PRIVATE_KEY }}
+          ssh_private_host: ${{ secrets.WLGDEV_SSH_PRIVATE_HOST }}
+          ssh_private_port: ${{ secrets.WLGDEV_SSH_PRIVATE_PORT }}
+          ssh_private_user: ${{ secrets.WLGDEV_SSH_PRIVATE_USER }}
+          delete_before_deploy:
+            ./docs
+            ./test
+          compose_file: './docker-compose.remote.yml'
+          target:
+            ${{ github.event.repository.name }}:nginx:80
+          env:
+            SERVICE_IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/${{ needs.publish-service.outputs.image-name }}
+            SERVICE_IMAGE_DIGEST=${{ needs.publish-service.outputs.image-digest }}
+            SERVICE_IMAGE_TAG=${{ needs.publish-service.outputs.image-tag }}
+            FOO=BAR
