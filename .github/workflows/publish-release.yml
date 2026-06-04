@@ -50,7 +50,9 @@ jobs:
         with:
           go-version: '1.26'
       - name: Compile Project
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ${{ github.event.repository.name }} ./cmd/main.go
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ${{ github.event.repository.name }} ./cmd/main.go
+          chmod +x ${{ github.event.repository.name }}
 
       - name: Build and Publish Docker Image to GHCR
         id: publish
