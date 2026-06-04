@@ -179,7 +179,7 @@ runs:
     # image-tags: - must contain all tags of an image to be removed ('master*' - pattern for all tags existed)
     # if the image has: master-123 sha-123 - then image-tags also should mention that (or else nothing deleted)
     - name: Clean Snapshots (dev)
-      uses: snok/container-retention-policy@v3.0.0
+      uses: snok/container-retention-policy@v3.1.0
       with:
         account: ${{ github.repository_owner }}
         token: ${{ inputs.github-token }}
@@ -193,7 +193,7 @@ runs:
         timestamp-to-use: created_at
 
     - name: Clean Snapshots (master)
-      uses: snok/container-retention-policy@v3.0.0
+      uses: snok/container-retention-policy@v3.1.0
       with:
         account: ${{ github.repository_owner }}
         token: ${{ inputs.github-token }}
@@ -208,7 +208,7 @@ runs:
 
     - name: Clean Releases (on Release)
       if: github.event_name == 'release'
-      uses: snok/container-retention-policy@v3.0.0
+      uses: snok/container-retention-policy@v3.1.0
       with:
         account: ${{ github.repository_owner }}
         token: ${{ inputs.github-token }}
