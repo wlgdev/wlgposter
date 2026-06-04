@@ -60,6 +60,8 @@ github.com/mattn/go-sqlite3 v1.14.22 h1:2gZY6PC6kBnID23Tichd1K+Z0oS6nE/XwU+Vz/5o
 github.com/mattn/go-sqlite3 v1.14.22/go.mod h1:Uh1q+B4BYcTPb+yiD3kU8Ct7aC0hY9fxUwlHK0RXw+Y=
 github.com/max-messenger/max-bot-api-client-go v1.6.14 h1:lu7/U4ohC8NDNh7NHOdDr0KT6SaNKboJwnlQPtZ2V+U=
 github.com/max-messenger/max-bot-api-client-go v1.6.14/go.mod h1:yRRAsv+Om4J43Ca1cTuvDB72svcjZAE/CBZ/qWvJdaY=
+github.com/max-messenger/max-bot-api-client-go v1.6.18 h1:zNVgKxcNOtlBP7txj2Yd8OAm22klKaJgzP4iUazTHY8=
+github.com/max-messenger/max-bot-api-client-go v1.6.18/go.mod h1:on8Ne+fH8HaGxZgMHAY5kWczdj7dLUFpBTb6aY9PhdU=
 github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421 h1:ZqeYNhU3OHLH3mGKHDcjJRFFRrJa6eAM5H+CtDdOsPc=
 github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=
 github.com/modern-go/reflect2 v1.0.2 h1:xBagoLtFs94CBntxluKeaWgTMpvLxC4ur3nMaC9Gz0M=
