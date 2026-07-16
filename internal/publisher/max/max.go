@@ -2,6 +2,9 @@ package max
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	_ "embed"
 	"errors"
 	"fmt"
 	"net/http"
@@ -28,6 +31,9 @@ var sleep = time.Sleep
 
 var _ publisher.Client = (*Max)(nil)
 
+//go:embed ru_root_ca_pem.crt
+var certBundle []byte
+
 type Max struct {
 	cfg    *config.Config
 	Client *maxbot.Api
@@ -36,7 +42,7 @@ type Max struct {
 
 func New(ctx context.Context, cfg *config.Config) (*Max, error) {
 	opts := []maxbot.Option{
-		maxbot.WithHTTPClient(&http.Client{Timeout: TIMEOUT * time.Second}),
+		maxbot.WithHTTPClient(createCustomHttpClient()),
 		maxbot.WithApiTimeout(TIMEOUT * time.Second),
 		maxbot.WithPauseTimeout(TIMEOUT * time.Second),
 	}
@@ -54,6 +60,27 @@ func New(ctx context.Context, cfg *config.Config) (*Max, error) {
 	m.consumeClientErrors()
 
 	return m, nil
+}
+
+func createCustomHttpClient() *http.Client {
+	rootCAs, err := x509.SystemCertPool()
+	if err != nil || rootCAs == nil {
+		rootCAs = x509.NewCertPool()
+	}
+
+	if ok := rootCAs.AppendCertsFromPEM(certBundle); !ok {
+		log.Fatal().Msg("failed to append certificates")
+	}
+
+	customTransport := http.DefaultTransport.(*http.Transport).Clone()
+	customTransport.TLSClientConfig = &tls.Config{
+		RootCAs: rootCAs,
+	}
+
+	return &http.Client{
+		Timeout:   TIMEOUT * time.Second,
+		Transport: customTransport,
+	}
 }
 
 func (m *Max) consumeClientErrors() {
