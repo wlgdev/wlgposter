@@ -7,7 +7,7 @@ import (
 	"time"
 	"wlgposter/internal/utils"
 
-	maxbot "github.com/max-messenger/max-bot-api-client-go"
+	maxbot "github.com/max-messenger/max-bot-api-client-go/v2"
 )
 
 func TestRetryMediaUploadRetriesOnAnyAPIError(t *testing.T) {
@@ -30,7 +30,7 @@ func TestRetryMediaUploadRetriesOnAnyAPIError(t *testing.T) {
 		func() (string, error) {
 			attempts++
 			if attempts < 3 {
-				return "", &maxbot.APIError{Code: 400, Message: "bad.request"}
+				return "", maxbot.Error{Code: "400", Message: "bad.request"}
 			}
 			return "ok", nil
 		},

@@ -9,7 +9,7 @@ require (
 	github.com/davecgh/go-spew v1.1.1
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/joho/godotenv v1.5.1
-	github.com/max-messenger/max-bot-api-client-go v1.7.1
+	github.com/max-messenger/max-bot-api-client-go/v2 v2.2.2
 	github.com/rs/zerolog v1.34.0
 	go.opentelemetry.io/otel v1.42.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.18.0

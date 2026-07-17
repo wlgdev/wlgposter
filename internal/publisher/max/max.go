@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
+	"os"
 	"strings"
 	"time"
 	"wlgposter/internal/config"
@@ -16,8 +16,8 @@ import (
 	"wlgposter/internal/publisher"
 	"wlgposter/internal/utils"
 
-	maxbot "github.com/max-messenger/max-bot-api-client-go"
-	"github.com/max-messenger/max-bot-api-client-go/schemes"
+	maxbot "github.com/max-messenger/max-bot-api-client-go/v2"
+	"github.com/max-messenger/max-bot-api-client-go/v2/model"
 	"github.com/rs/zerolog/log"
 )
 
@@ -41,13 +41,13 @@ type Max struct {
 }
 
 func New(ctx context.Context, cfg *config.Config) (*Max, error) {
-	opts := []maxbot.Option{
+	opts := []maxbot.Opt{
 		maxbot.WithHTTPClient(createCustomHttpClient()),
-		maxbot.WithApiTimeout(TIMEOUT * time.Second),
-		maxbot.WithPauseTimeout(TIMEOUT * time.Second),
+		maxbot.WithPollingTimeout(TIMEOUT * time.Second),
+		maxbot.WithPollingPause(TIMEOUT * time.Second),
 	}
 
-	client, err := maxbot.New(cfg.MaxBotToken, opts...)
+	client, err := maxbot.NewApi(cfg.MaxBotToken, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +57,6 @@ func New(ctx context.Context, cfg *config.Config) (*Max, error) {
 		Client: client,
 		ctx:    ctx,
 	}
-	m.consumeClientErrors()
 
 	return m, nil
 }
@@ -83,28 +82,6 @@ func createCustomHttpClient() *http.Client {
 	}
 }
 
-func (m *Max) consumeClientErrors() {
-	errs := m.Client.GetErrors()
-
-	go func() {
-		for {
-			select {
-			case <-m.ctx.Done():
-				return
-			case err, ok := <-errs:
-				if !ok {
-					return
-				}
-				if err == nil || isRetryNoise(err) {
-					continue
-				}
-
-				log.Warn().Err(err).Msg("MAX client internal error")
-			}
-		}
-	}()
-}
-
 func isRetryNoise(err error) bool {
 	if err == nil {
 		return false
@@ -120,26 +97,26 @@ func (m *Max) Delete(mid string) error {
 	if err != nil {
 		return err
 	}
-	if result.Success == true {
+	if result.Success {
 		return nil
 	}
-	return errors.New(result.Message)
+	return errors.New("failed to delete message")
 }
 
 func (m *Max) Create(post *post.Post, opts publisher.Options) (string, []error) {
 	return doPost(m, post, opts.ReplyID, func(msg *maxbot.Message) (string, error) {
-		result, err := m.Client.Messages.SendWithResult(m.ctx, msg)
+		result, err := m.Client.Messages.Send(m.ctx, msg)
 		if err != nil {
 			return "", err
 		}
-		return result.Body.Mid, nil
+		return result.Message.Body.Mid, nil
 	})
 }
 
 func (m *Max) Edit(id string, post *post.Post, _ publisher.Options) (string, bool, []error) {
 	ok, errs := doPost(m, post, "", func(msg *maxbot.Message) (bool, error) {
-		err := m.Client.Messages.EditMessage(m.ctx, id, msg)
-		return err == nil, err
+		result, err := m.Client.Messages.EditMessage(m.ctx, id, msg.MessageBody())
+		return result.Success, err
 	})
 
 	return id, ok, errs
@@ -150,7 +127,7 @@ func doPost[T any](m *Max, post *post.Post, replyMaxMessageID string, action fun
 	errs := make([]error, 0)
 
 	msg := maxbot.NewMessage()
-	msg.SetFormat(schemes.HTML)
+	msg.SetFormat(model.FormatHTML)
 
 	if m.cfg.ENV == "production" {
 		msg.SetChat(m.cfg.MaxTargetChatID)
@@ -171,11 +148,11 @@ func doPost[T any](m *Max, post *post.Post, replyMaxMessageID string, action fun
 	}
 
 	if len(post.Keyboard) > 0 {
-		kb := &maxbot.Keyboard{}
+		kb := model.NewKeyboard()
 		for _, row := range post.Keyboard {
 			r := kb.AddRow()
 			for _, button := range row {
-				r.AddLink(button.Text, schemes.DEFAULT, button.URL)
+				r.AddLink(button.Text, button.URL)
 			}
 		}
 
@@ -222,7 +199,7 @@ func (m *Max) addMediaAttachment(msg *maxbot.Message, media *post.Media) error {
 
 	switch media.Type {
 	case "photo":
-		photo, err := utils.RetryMediaUpload(
+		token, err := utils.RetryMediaUpload(
 			m.ctx,
 			utils.RetryMediaUploadOptions{
 				Platform: "max",
@@ -230,21 +207,26 @@ func (m *Max) addMediaAttachment(msg *maxbot.Message, media *post.Media) error {
 				FileName: media.FileName,
 				Path:     media.DownloadedPath,
 			},
-			func() (*schemes.PhotoTokens, error) {
-				return m.Client.Uploads.UploadPhotoFromFile(m.ctx, media.DownloadedPath)
+			func() (string, error) {
+				f, err := os.Open(media.DownloadedPath)
+				if err != nil {
+					return "", err
+				}
+				defer f.Close()
+				return m.Client.Upload.Upload(m.ctx, model.UploadImage, f, media.FileName, media.Size)
 			},
 		)
 		if err != nil {
 			return fmt.Errorf("upload %s %q from %q: %w", media.Type, media.FileName, media.DownloadedPath, err)
 		}
 
-		msg.AddPhoto(photo)
-		media.MaxToken = getPhotoReuseToken(photo)
+		msg.AddAttachByToken(token, model.AttachImage)
+		media.MaxToken = token
 		log.Debug().Str("path", media.DownloadedPath).Str("size", utils.BytesToHuman(media.Size)).Msg("MAX photo uploaded")
 		return nil
 
 	case "video":
-		video, err := utils.RetryMediaUpload(
+		token, err := utils.RetryMediaUpload(
 			m.ctx,
 			utils.RetryMediaUploadOptions{
 				Platform: "max",
@@ -252,21 +234,26 @@ func (m *Max) addMediaAttachment(msg *maxbot.Message, media *post.Media) error {
 				FileName: media.FileName,
 				Path:     media.DownloadedPath,
 			},
-			func() (*schemes.UploadedInfo, error) {
-				return m.Client.Uploads.UploadMediaFromFile(m.ctx, schemes.VIDEO, media.DownloadedPath)
+			func() (string, error) {
+				f, err := os.Open(media.DownloadedPath)
+				if err != nil {
+					return "", err
+				}
+				defer f.Close()
+				return m.Client.Upload.Upload(m.ctx, model.UploadVideo, f, media.FileName, media.Size)
 			},
 		)
 		if err != nil {
 			return fmt.Errorf("upload %s %q from %q: %w", media.Type, media.FileName, media.DownloadedPath, err)
 		}
 
-		msg.AddVideo(video)
-		media.MaxToken = video.Token
+		msg.AddAttachByToken(token, model.AttachVideo)
+		media.MaxToken = token
 		log.Debug().Str("path", media.DownloadedPath).Str("size", utils.BytesToHuman(media.Size)).Msg("MAX video uploaded")
 		return nil
 
 	case "audio", "voice":
-		audio, err := utils.RetryMediaUpload(
+		token, err := utils.RetryMediaUpload(
 			m.ctx,
 			utils.RetryMediaUploadOptions{
 				Platform: "max",
@@ -274,16 +261,21 @@ func (m *Max) addMediaAttachment(msg *maxbot.Message, media *post.Media) error {
 				FileName: media.FileName,
 				Path:     media.DownloadedPath,
 			},
-			func() (*schemes.UploadedInfo, error) {
-				return m.Client.Uploads.UploadMediaFromFile(m.ctx, schemes.AUDIO, media.DownloadedPath)
+			func() (string, error) {
+				f, err := os.Open(media.DownloadedPath)
+				if err != nil {
+					return "", err
+				}
+				defer f.Close()
+				return m.Client.Upload.Upload(m.ctx, model.UploadAudio, f, media.FileName, media.Size)
 			},
 		)
 		if err != nil {
 			return fmt.Errorf("upload %s %q from %q: %w", media.Type, media.FileName, media.DownloadedPath, err)
 		}
 
-		msg.AddAudio(audio)
-		media.MaxToken = audio.Token
+		msg.AddAttachByToken(token, model.AttachAudio)
+		media.MaxToken = token
 		log.Debug().Str("path", media.DownloadedPath).Str("size", utils.BytesToHuman(media.Size)).Msg("MAX audio uploaded")
 		return nil
 	}
@@ -294,35 +286,15 @@ func (m *Max) addMediaAttachment(msg *maxbot.Message, media *post.Media) error {
 func addMediaAttachmentByToken(msg *maxbot.Message, media *post.Media) bool {
 	switch media.Type {
 	case "photo":
-		msg.AddPhotoByToken(media.MaxToken)
+		msg.AddAttachByToken(media.MaxToken, model.AttachImage)
 		return true
 	case "video":
-		msg.AddVideo(&schemes.UploadedInfo{Token: media.MaxToken})
+		msg.AddAttachByToken(media.MaxToken, model.AttachVideo)
 		return true
 	case "audio", "voice":
-		msg.AddAudio(&schemes.UploadedInfo{Token: media.MaxToken})
+		msg.AddAttachByToken(media.MaxToken, model.AttachAudio)
 		return true
 	default:
 		return false
 	}
-}
-
-func getPhotoReuseToken(photo *schemes.PhotoTokens) string {
-	if photo == nil || len(photo.Photos) == 0 {
-		return ""
-	}
-
-	keys := make([]string, 0, len(photo.Photos))
-	for key := range photo.Photos {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	for _, key := range keys {
-		if token := photo.Photos[key].Token; token != "" {
-			return token
-		}
-	}
-
-	return ""
 }
