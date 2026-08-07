@@ -55,12 +55,6 @@ inputs:
     description: 'Keep last N number of dev images (older then 1day)'
     required: false
     default: '10'
-# added: allows passing build arguments to docker build
-  build-args:
-    description: 'Newline-separated list of build-time variables (e.g. APP_NAME=myapp)'
-    required: false
-    default: ''
-
 
 outputs:
   image-name:
@@ -158,8 +152,6 @@ runs:
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: ${{ inputs.cache-from }}
         cache-to: ${{ inputs.cache-to }}
-        # added: pass build arguments to Dockerfile
-        build-args: ${{ inputs.build-args }}
         provenance: false # do not generate manifests images
 
     - name: Extract relevant tag
@@ -187,7 +179,7 @@ runs:
     # image-tags: - must contain all tags of an image to be removed ('master*' - pattern for all tags existed)
     # if the image has: master-123 sha-123 - then image-tags also should mention that (or else nothing deleted)
     - name: Clean Snapshots (dev)
-      uses: snok/container-retention-policy@v3.1.0
+      uses: snok/container-retention-policy@v3.0.0
       with:
         account: ${{ github.repository_owner }}
         token: ${{ inputs.github-token }}
@@ -201,7 +193,7 @@ runs:
         timestamp-to-use: created_at
 
     - name: Clean Snapshots (master)
-      uses: snok/container-retention-policy@v3.1.0
+      uses: snok/container-retention-policy@v3.0.0
       with:
         account: ${{ github.repository_owner }}
         token: ${{ inputs.github-token }}
@@ -216,7 +208,7 @@ runs:
 
     - name: Clean Releases (on Release)
       if: github.event_name == 'release'
-      uses: snok/container-retention-policy@v3.1.0
+      uses: snok/container-retention-policy@v3.0.0
       with:
         account: ${{ github.repository_owner }}
         token: ${{ inputs.github-token }}
